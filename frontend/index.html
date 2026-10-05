@@ -13,21 +13,25 @@
     <h1>LFS X AI Signal XYZ</h1>
     <p>5-Minute Pattern Intelligence</p>
   </div>
-  <span class="live">● READY</span>
+  <div class="header-status">
+    <span id="connection">CHECKING</span>
+    <span class="live">● 5M</span>
+  </div>
 </header>
 <section class="markets" id="markets"></section>
 <section class="panel">
   <div class="topline"><span id="symbol">USD/MXN OTC</span><span>TIMEFRAME: 5M</span></div>
+  <div class="mode-row"><span>DATA MODE: <b id="mode">HISTORICAL</b></span><span>STATUS: <b id="status">WAITING</b></span></div>
   <div class="signal" id="signal">WAITING</div>
   <div class="prob">
-    <div><b id="up">0%</b><small>UP</small></div>
-    <div><b id="down">0%</b><small>DOWN</small></div>
+    <div><b id="up">—</b><small>UP</small></div>
+    <div><b id="down">—</b><small>DOWN</small></div>
   </div>
   <div class="meta">
     <span>Pattern: <b id="pattern">—</b></span>
-    <span>Matches: <b id="matches">0</b></span>
+    <span>Matches: <b id="matches">—</b></span>
   </div>
-  <p class="note">Historical probability only. No result is guaranteed.</p>
+  <p class="note" id="note">Loading historical candles…</p>
 </section>
 </main>
 <script src="app.js"></script>
