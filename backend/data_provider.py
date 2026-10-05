@@ -47,7 +47,8 @@ class LiveDataProvider:
             raise RuntimeError("MARKET_DATA_API_KEY is not configured")
         return {
             "Authorization": f"Bearer {self.api_key}",
-            "User-Agent": "LFS-X-AI-Signal-XYZ/1.0",
+            "User-Agent": "LFS-X-AI-Signal-XYZ/1.1",
+            "Accept": "application/json",
         }
 
     async def _get_json(self, path: str, params: dict | None = None) -> dict:
@@ -57,7 +58,11 @@ class LiveDataProvider:
                 params=params,
                 headers=self._headers(),
             )
-            r.raise_for_status()
+            if r.is_error:
+                detail = r.text[:500].replace("\n", " ")
+                raise RuntimeError(
+                    f"OTCharts {r.status_code} on {path}: {detail}"
+                )
             return r.json()
 
     async def catalogue(self) -> list[dict]:
@@ -81,23 +86,42 @@ class LiveDataProvider:
                 "venue": self.venue,
             }
 
-        usage = await self.usage()
-        venues = await self.venues()
+        try:
+            usage, venues = await asyncio_gather_usage_venues(self)
+        except Exception as exc:
+            return {
+                "configured": True,
+                "status": "PROVIDER_ERROR",
+                "venue": self.venue,
+                "error": str(exc),
+            }
+
         selected = next(
             (v for v in venues if v.get("id") == self.venue), None
         )
+        books = usage.get("books", [])
         streams = usage.get("streams") or {}
-        return {
+        access = self.venue in books
+
+        result = {
             "configured": True,
-            "status": "OK",
+            "status": "OK" if access else "BOOK_ACCESS_MISMATCH",
             "venue": self.venue,
             "plan": usage.get("planName") or usage.get("plan"),
-            "books": usage.get("books", []),
+            "books": books,
+            "book_access": access,
             "venue_open": bool(selected and selected.get("open")),
             "venue_timeframes": (selected or {}).get("timeframes", []),
             "requests": usage.get("requests", {}),
             "streams": streams,
         }
+        if not access:
+            result["message"] = (
+                f"API key does not open venue={self.venue}. "
+                f"Key books are {books}. Select {self.venue} for this key "
+                "in OTCharts, save the book selection, and use the resulting key."
+            )
+        return result
 
     async def resolve_symbol(self, display_symbol: str) -> str:
         self.validate_symbol(display_symbol)
@@ -143,11 +167,6 @@ class LiveDataProvider:
         return payload.get("candles", [])
 
     async def stream(self, display_symbols: list[str]) -> AsyncIterator[Tick]:
-        """Open one multiplexed SSE stream for the requested symbols.
-
-        OTCharts accepts a comma-separated symbol list on one connection.
-        This lets a single paid stream carry all three requested markets.
-        """
         if not display_symbols:
             return
 
@@ -211,3 +230,8 @@ class LiveDataProvider:
 
                     yield Tick(symbol_map[symbol_id], ts, price)
                     event_type = None
+
+
+async def asyncio_gather_usage_venues(provider: LiveDataProvider):
+    import asyncio
+    return await asyncio.gather(provider.usage(), provider.venues())
