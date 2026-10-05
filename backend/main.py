@@ -18,7 +18,11 @@ provider = LiveDataProvider()
 builder = CandleBuilder()
 completed = {symbol: [] for symbol in SUPPORTED_SYMBOLS}
 latest = {}
-live_task = None
+provider_state = {
+    "status": "STARTING",
+    "details": {},
+}
+live_tasks = []
 
 
 def _history_to_candles(symbol, rows):
@@ -42,10 +46,11 @@ def _history_to_candles(symbol, rows):
 async def _load_history():
     for symbol in SUPPORTED_SYMBOLS:
         try:
-            rows = await provider.history(symbol, limit=300)
+            rows = await provider.history(symbol, limit=5000)
             now = datetime.now(timezone.utc)
             completed[symbol] = [
-                c for c in _history_to_candles(symbol, rows)
+                c
+                for c in _history_to_candles(symbol, rows)
                 if c.close_time <= now
             ][-5000:]
         except Exception as exc:
@@ -56,60 +61,92 @@ async def _load_history():
             }
 
 
-async def _live_loop():
+def _record_closed(symbol, closed):
+    bucket = completed[symbol]
+    if not bucket or closed.open_time > bucket[-1].open_time:
+        bucket.append(closed)
+        del bucket[:-5000]
+
+    result = analyze_last_three(bucket)
+    latest[symbol] = {
+        "symbol": symbol,
+        "timeframe": "5m",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        **result,
+    }
+
+
+async def _live_loop(symbol):
     while True:
         try:
-            async for tick in provider.stream(list(SUPPORTED_SYMBOLS)):
+            async for tick in provider.stream(symbol):
                 closed = builder.add_tick(tick)
-                if closed is None:
-                    continue
-
-                bucket = completed[tick.symbol]
-                if not bucket or closed.open_time > bucket[-1].open_time:
-                    bucket.append(closed)
-                    del bucket[:-5000]
-
-                result = analyze_last_three(bucket)
-                latest[tick.symbol] = {
-                    "symbol": tick.symbol,
-                    "timeframe": "5m",
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                    **result,
-                }
-
+                if closed is not None:
+                    _record_closed(symbol, closed)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            for symbol in SUPPORTED_SYMBOLS:
-                latest[symbol] = {
-                    "status": "LIVE_RECONNECTING",
-                    "symbol": symbol,
-                    "error": str(exc),
-                }
+            latest[symbol] = {
+                "status": "LIVE_RECONNECTING",
+                "symbol": symbol,
+                "error": str(exc),
+            }
             await asyncio.sleep(5)
+
+
+async def _start_live_streams():
+    global live_tasks
+
+    try:
+        diag = await provider.diagnostics()
+        provider_state["details"] = diag
+
+        if diag.get("status") != "OK":
+            provider_state["status"] = diag.get("status", "DATA_ERROR")
+            return
+
+        if not diag.get("venue_open"):
+            provider_state["status"] = "VENUE_NOT_OPEN"
+            return
+
+        stream_info = diag.get("streams") or {}
+        stream_limit = stream_info.get("limit")
+        if provider.venue != "otc" and isinstance(stream_limit, int):
+            if stream_limit < len(SUPPORTED_SYMBOLS):
+                provider_state["status"] = "STREAM_CAPACITY_INSUFFICIENT"
+                provider_state["required_streams"] = len(SUPPORTED_SYMBOLS)
+                return
+
+        provider_state["status"] = "LIVE_STARTING"
+        live_tasks = [
+            asyncio.create_task(_live_loop(symbol))
+            for symbol in sorted(SUPPORTED_SYMBOLS)
+        ]
+        provider_state["status"] = "LIVE_RUNNING"
+    except Exception as exc:
+        provider_state["status"] = "PROVIDER_ERROR"
+        provider_state["details"] = {"error": str(exc)}
 
 
 @asynccontextmanager
 async def lifespan(app):
-    global live_task
-
     if provider.configured():
         await _load_history()
-        live_task = asyncio.create_task(_live_loop())
+        await _start_live_streams()
+    else:
+        provider_state["status"] = "SETUP_REQUIRED"
 
     yield
 
-    if live_task:
-        live_task.cancel()
-        try:
-            await live_task
-        except asyncio.CancelledError:
-            pass
+    for task in live_tasks:
+        task.cancel()
+    if live_tasks:
+        await asyncio.gather(*live_tasks, return_exceptions=True)
 
 
 app = FastAPI(
     title="LFS X AI Signal XYZ",
-    version="1.1.0",
+    version="1.2.0",
     lifespan=lifespan,
 )
 
@@ -143,6 +180,7 @@ def root():
         "timeframe": "5m",
         "markets": sorted(SUPPORTED_SYMBOLS),
         "live_provider_configured": provider.configured(),
+        "provider_status": provider_state["status"],
     }
 
 
@@ -154,6 +192,15 @@ def info():
         "timeframe": "5m",
         "markets": sorted(SUPPORTED_SYMBOLS),
         "live_provider_configured": provider.configured(),
+        "provider_status": provider_state["status"],
+    }
+
+
+@app.get("/api/provider-status")
+def provider_status():
+    return {
+        "status": provider_state["status"],
+        "details": provider_state["details"],
     }
 
 
@@ -162,6 +209,7 @@ def health():
     return {
         "ok": True,
         "live_provider_configured": provider.configured(),
+        "provider_status": provider_state["status"],
         "venue": provider.venue,
         "timeframe_seconds": 300,
     }
@@ -185,6 +233,14 @@ def signal(symbol: str):
             "symbol": symbol,
             "status": "SETUP_REQUIRED",
             "reason": "Configure MARKET_DATA_API_KEY on the backend server",
+        }
+
+    if provider_state["status"] == "STREAM_CAPACITY_INSUFFICIENT":
+        return {
+            "symbol": symbol,
+            "status": "STREAM_CAPACITY_INSUFFICIENT",
+            "reason": "The selected data plan cannot keep all three requested Quotex OTC streams live.",
+            "required_streams": len(SUPPORTED_SYMBOLS),
         }
 
     return latest.get(
