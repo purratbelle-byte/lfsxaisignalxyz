@@ -1,7 +1,7 @@
-"""OTCharts read-only market-data adapter.
+"""OTCharts OTC (Pocket Option) read-only market-data adapter.
 
-Quotex itself has no public official API. This adapter uses an external
-read-only data API; broker login/session credentials are never stored here.
+Uses the OTCharts `otc` book. Broker login/session credentials are never
+stored here; only an OTCharts API key is used server-side.
 """
 import json
 import os
@@ -32,7 +32,8 @@ class LiveDataProvider:
             "MARKET_DATA_API_BASE_URL", "https://otcharts.com"
         ).rstrip("/")
         self.api_key = os.getenv("MARKET_DATA_API_KEY", "")
-        self.venue = os.getenv("MARKET_DATA_VENUE", "quotex")
+        # OTCharts "otc" book = Pocket Option OTC feed.
+        self.venue = os.getenv("MARKET_DATA_VENUE", "otc")
         self.timeout = float(os.getenv("MARKET_DATA_TIMEOUT", "20"))
 
     def configured(self) -> bool:
@@ -47,7 +48,7 @@ class LiveDataProvider:
             raise RuntimeError("MARKET_DATA_API_KEY is not configured")
         return {
             "Authorization": f"Bearer {self.api_key}",
-            "User-Agent": "LFS-X-AI-Signal-XYZ/1.1",
+            "User-Agent": "LFS-X-AI-Signal-XYZ/1.2",
             "Accept": "application/json",
         }
 
@@ -118,8 +119,8 @@ class LiveDataProvider:
         if not access:
             result["message"] = (
                 f"API key does not open venue={self.venue}. "
-                f"Key books are {books}. Select {self.venue} for this key "
-                "in OTCharts, save the book selection, and use the resulting key."
+                f"Key books are {books}. Create/select an OTCharts key "
+                f"that opens the {self.venue} book."
             )
         return result
 
