@@ -10,22 +10,25 @@ function selectMarket(symbol) {
   document.querySelectorAll(".market-btn").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.symbol === symbol);
   });
+  $("symbol").textContent = symbol;
   refreshSignal();
 }
 
 function renderSignal(data) {
   const status = data.status || "WAITING";
   $("status").textContent = status.replaceAll("_", " ");
+  $("signal").textContent = data.direction || "WAITING";
   $("pattern").textContent = data.pattern_id || "—";
   $("matches").textContent = data.matches ?? "—";
   $("up").textContent = data.up_probability != null ? data.up_probability + "%" : "—";
   $("down").textContent = data.down_probability != null ? data.down_probability + "%" : "—";
-  $("direction").textContent = data.direction || "WAITING";
-  $("note").textContent = data.reason || (
-    data.direction && data.direction !== "WAITING"
+
+  const mode = data.mode === "LIVE" ? "LIVE" : "HISTORICAL";
+  $("mode").textContent = mode;
+  $("note").textContent = data.note || data.reason ||
+    (data.direction && data.direction !== "WAITING"
       ? "Historical pattern probability only — not a guaranteed outcome."
-      : "Waiting for enough completed 5-minute candles."
-  );
+      : "Waiting for enough completed 5-minute candles.");
 }
 
 async function refreshSignal() {
@@ -35,6 +38,7 @@ async function refreshSignal() {
     renderSignal(await res.json());
   } catch (e) {
     $("status").textContent = "OFFLINE";
+    $("signal").textContent = "WAITING";
     $("note").textContent = "Backend is unreachable.";
   }
 }
@@ -43,7 +47,9 @@ async function checkHealth() {
   try {
     const res = await fetch(API_BASE + "/health");
     const data = await res.json();
-    $("connection").textContent = data.live_provider_configured ? "LIVE READY" : "ENGINE READY";
+    $("connection").textContent =
+      data.provider_status === "LIVE_RUNNING" ? "LIVE" :
+      data.live_provider_configured ? "HISTORICAL MODE" : "SETUP REQUIRED";
   } catch {
     $("connection").textContent = "OFFLINE";
   }
