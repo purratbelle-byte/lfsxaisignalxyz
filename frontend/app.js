@@ -49,6 +49,9 @@ async function checkHealth() {
     const data = await res.json();
     $("connection").textContent =
       data.provider_status === "LIVE_RUNNING" ? "LIVE" :
+      data.provider_status === "BOOK_ACCESS_MISMATCH" ? "OTC BOOK ACCESS ERROR" :
+      data.provider_status === "VENUE_NOT_OPEN" ? "VENUE NOT OPEN" :
+      data.provider_status === "LIVE_STREAMING_UNAVAILABLE" ? "HISTORICAL MODE" :
       data.live_provider_configured ? "HISTORICAL MODE" : "SETUP REQUIRED";
   } catch {
     $("connection").textContent = "OFFLINE";
