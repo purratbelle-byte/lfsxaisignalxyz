@@ -40,7 +40,18 @@ class LiveDataProvider:
         return bool(self.api_key)
 
     def validate_symbol(self, symbol: str) -> None:
-        if symbol not in SUPPORTED_SYMBOLS:
+        # The backend may select currently quoted OTC currency pairs from the
+        # live catalogue, so validation must not reject those dynamic names.
+        text = str(symbol).strip()
+        if text.endswith(" OTC") and "/" in text:
+            pair = text[:-4].strip()
+            parts = pair.split("/", 1)
+            if len(parts) == 2 and all(
+                len(part.strip()) == 3 and part.strip().isalpha()
+                for part in parts
+            ):
+                return
+        if text not in SUPPORTED_SYMBOLS:
             raise ValueError(f"Unsupported symbol: {symbol}")
 
     def _headers(self) -> dict:
