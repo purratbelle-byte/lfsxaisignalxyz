@@ -1,7 +1,7 @@
 const API_BASE = window.LFS_API_BASE || "";
 
-const markets = ["USD/MXN OTC", "USD/PKR OTC", "EUR/CHF OTC"];
-let selected = markets[0];
+let markets = [];
+let selected = "";
 
 function $(id) { return document.getElementById(id); }
 
@@ -58,8 +58,15 @@ async function checkHealth() {
   }
 }
 
-document.addEventListener("DOMContentLoaded", () => {
+async function loadMarkets() {
+  const res = await fetch(API_BASE + "/api/markets");
+  if (!res.ok) throw new Error("Markets API error");
+  const data = await res.json();
+  markets = data.markets || [];
+  if (!markets.length) throw new Error("No OTC markets available");
+
   const container = $("markets");
+  container.innerHTML = "";
   markets.forEach(symbol => {
     const btn = document.createElement("button");
     btn.className = "market-btn";
@@ -68,8 +75,18 @@ document.addEventListener("DOMContentLoaded", () => {
     btn.onclick = () => selectMarket(symbol);
     container.appendChild(btn);
   });
-  selectMarket(selected);
-  checkHealth();
+  selectMarket(markets[0]);
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
+  try {
+    await loadMarkets();
+    await checkHealth();
+  } catch (e) {
+    $("connection").textContent = "NO OTC MARKETS";
+    $("status").textContent = "WAITING";
+    $("note").textContent = "No currently quoted OTC currency pair is available.";
+  }
   setInterval(refreshSignal, 5000);
   setInterval(checkHealth, 15000);
 });
