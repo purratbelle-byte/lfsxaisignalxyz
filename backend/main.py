@@ -212,14 +212,10 @@ class AnalyzeRequest(BaseModel):
 
 @app.get("/")
 def root():
-    return {
-        "name": "LFS X AI Signal XYZ",
-        "status": "online",
-        "timeframe": "5m",
-        "markets": sorted(SUPPORTED_SYMBOLS),
-        "live_provider_configured": provider.configured(),
-        "provider_status": provider_state["status"],
-    }
+    # Serve the actual dashboard at the root URL. API metadata remains available
+    # through /api/info so the browser does not show raw JSON on the home page.
+    return FileResponse("frontend/index.html")
+
 
 
 @app.get("/api/info")
