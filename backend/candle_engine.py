@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Iterable
 
 @dataclass(frozen=True)
@@ -55,7 +55,7 @@ def build_5m_candle(symbol: str, open_time: datetime, prices: Iterable[tuple[dat
     return Candle(
         symbol=symbol,
         open_time=open_time,
-        close_time=open_time,
+        close_time=open_time + timedelta(minutes=5),
         open=values[0],
         high=max(values),
         low=min(values),
