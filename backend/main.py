@@ -48,6 +48,7 @@ async def _load_history():
                 if c.close_time <= now
             ][-5000:]
             completed[symbol] = candles
+            print(f"[HISTORY] {symbol}: loaded {len(candles)} completed 5m candles", flush=True)
 
             # Free-plan mode still gets a useful historical analysis even
             # when OTCharts does not allow a live stream.
@@ -60,6 +61,7 @@ async def _load_history():
                 **result,
             }
         except Exception as exc:
+            print(f"[HISTORY_ERROR] {symbol}: {exc}", flush=True)
             latest[symbol] = {
                 "status": "DATA_ERROR",
                 "symbol": symbol,
@@ -110,6 +112,7 @@ async def _start_live_streams():
     try:
         diag = await provider.diagnostics()
         provider_state["details"] = diag
+        print(f"[PROVIDER] {diag}", flush=True)
 
         if diag.get("status") != "OK":
             provider_state["status"] = diag.get("status", "DATA_ERROR")
@@ -125,6 +128,7 @@ async def _start_live_streams():
 
         if isinstance(stream_limit, int) and stream_limit < 1:
             provider_state["status"] = "LIVE_STREAMING_UNAVAILABLE"
+            print("[PROVIDER] Live streaming unavailable on current plan", flush=True)
             return
 
         if isinstance(instruments_per_stream, int) and instruments_per_stream < len(SUPPORTED_SYMBOLS):
