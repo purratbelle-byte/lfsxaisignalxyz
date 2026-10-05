@@ -75,6 +75,31 @@ class LiveDataProvider:
     async def usage(self) -> dict:
         return await self._get_json("/v1/usage")
 
+    async def currency_otc_markets(self, limit: int = 3) -> list[str]:
+        """Return currently listed OTC currency-pair display names."""
+        symbols = await self.catalogue()
+        markets = []
+        for item in symbols:
+            name = str(item.get("name", "")).strip()
+            sid = str(item.get("symbol", "")).strip()
+            if not name or not sid:
+                continue
+            upper = name.upper()
+            if not upper.endswith(" OTC"):
+                continue
+            pair = name[:-4].strip()
+            if "/" not in pair:
+                continue
+            left, right = pair.split("/", 1)
+            if len(left.strip()) != 3 or len(right.strip()) != 3:
+                continue
+            if not left.strip().isalpha() or not right.strip().isalpha():
+                continue
+            markets.append(name)
+            if len(markets) >= limit:
+                break
+        return markets
+
     async def venues(self) -> list[dict]:
         payload = await self._get_json("/v1/venues")
         return payload.get("venues", [])
