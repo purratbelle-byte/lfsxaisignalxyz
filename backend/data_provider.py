@@ -142,34 +142,72 @@ class LiveDataProvider:
             )
         return payload.get("candles", [])
 
-    async def stream(self, display_symbol: str) -> AsyncIterator[Tick]:
-        """Open one SSE stream for one symbol.
+    async def stream(self, display_symbols: list[str]) -> AsyncIterator[Tick]:
+        """Open one multiplexed SSE stream for the requested symbols.
 
-        OTCharts multiplexes symbols on the Pocket Option OTC book, but
-        Quotex and the other books use one symbol per connection.
+        OTCharts accepts a comma-separated symbol list on one connection.
+        This lets a single paid stream carry all three requested markets.
         """
-        symbol_id = await self.resolve_symbol(display_symbol)
+        if not display_symbols:
+            return
+
+        symbol_map = {}
+        for display_symbol in display_symbols:
+            symbol_map[await self.resolve_symbol(display_symbol)] = display_symbol
+
+        requested_ids = list(symbol_map)
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
                 "GET",
                 f"{self.base_url}/v1/stream",
-                params={"venue": self.venue, "symbol": symbol_id},
+                params={
+                    "venue": self.venue,
+                    "symbol": ",".join(requested_ids),
+                },
                 headers=self._headers(),
             ) as r:
                 r.raise_for_status()
+
+                subscribed_ids = set(requested_ids)
+                event_type = None
+
                 async for line in r.aiter_lines():
                     line = line.strip()
+                    if not line:
+                        continue
+
+                    if line.startswith("event:"):
+                        event_type = line.split(":", 1)[1].strip()
+                        continue
+
                     if not line.startswith("data:"):
                         continue
+
                     data = line.split(":", 1)[1].strip()
                     try:
                         payload = json.loads(data)
-                        if payload.get("symbol") != symbol_id:
-                            continue
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+
+                    if event_type == "connected":
+                        connected = payload.get("symbols") or []
+                        subscribed_ids = set(connected)
+                        event_type = None
+                        continue
+
+                    symbol_id = payload.get("symbol")
+                    if symbol_id not in subscribed_ids:
+                        event_type = None
+                        continue
+
+                    try:
                         price = float(payload["price"])
                         ts = datetime.fromtimestamp(
                             float(payload["time"]), tz=timezone.utc
                         )
-                        yield Tick(display_symbol, ts, price)
-                    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    except (KeyError, TypeError, ValueError):
+                        event_type = None
                         continue
+
+                    yield Tick(symbol_map[symbol_id], ts, price)
+                    event_type = None
