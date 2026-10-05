@@ -3,7 +3,7 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException\nfrom fastapi.responses import FileResponse\nfrom fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -91,7 +91,7 @@ def root():
     return {"name":"LFS X AI Signal XYZ","status":"online","timeframe":"5m",
             "markets":sorted(SUPPORTED_SYMBOLS),"live_provider_configured":provider.configured()}
 
-@app.get("/health")
+@app.get("/api/info")\ndef info():\n    return {"name":"LFS X AI Signal XYZ","status":"online","timeframe":"5m",\n            "markets":sorted(SUPPORTED_SYMBOLS),"live_provider_configured":provider.configured()}\n\n@app.get("/health")
 def health():
     return {"ok":True,"live_provider_configured":provider.configured(),
             "venue":provider.venue,"timeframe_seconds":300}
@@ -113,3 +113,4 @@ def signal(symbol: str):
 def analyze(req: AnalyzeRequest):
     candles=[Candle(**c.model_dump()) for c in req.candles]
     return analyze_last_three(candles)
+\napp.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")\n
