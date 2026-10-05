@@ -48,10 +48,11 @@ async def _load_history():
                 if c.close_time <= now
             ][-5000:]
             completed[symbol] = candles
-            print(f"[HISTORY] {symbol}: loaded {len(candles)} completed 5m candles", flush=True)
+            print(
+                f"[HISTORY] {symbol}: loaded {len(candles)} completed 5m candles",
+                flush=True,
+            )
 
-            # Free-plan mode still gets a useful historical analysis even
-            # when OTCharts does not allow a live stream.
             result = analyze_last_three(candles)
             latest[symbol] = {
                 "symbol": symbol,
@@ -97,20 +98,16 @@ async def _live_loop():
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            for symbol in symbols:
-                latest[symbol] = {
-                    "status": "LIVE_RECONNECTING",
-                    "symbol": symbol,
-                    "mode": "LIVE",
-                    "error": str(exc),
-                }
+            print(f"[LIVE_RECONNECT] {exc}", flush=True)
             await asyncio.sleep(5)
 
 
-async def _start_live_streams():
+async def _start_live_streams(diag=None):
     global live_tasks
     try:
-        diag = await provider.diagnostics()
+        if diag is None:
+            diag = await provider.diagnostics()
+
         provider_state["details"] = diag
         print(f"[PROVIDER] {diag}", flush=True)
 
@@ -128,10 +125,16 @@ async def _start_live_streams():
 
         if isinstance(stream_limit, int) and stream_limit < 1:
             provider_state["status"] = "LIVE_STREAMING_UNAVAILABLE"
-            print("[PROVIDER] Live streaming unavailable on current plan", flush=True)
+            print(
+                "[PROVIDER] Live streaming unavailable on current plan",
+                flush=True,
+            )
             return
 
-        if isinstance(instruments_per_stream, int) and instruments_per_stream < len(SUPPORTED_SYMBOLS):
+        if (
+            isinstance(instruments_per_stream, int)
+            and instruments_per_stream < len(SUPPORTED_SYMBOLS)
+        ):
             provider_state["status"] = "STREAM_INSTRUMENT_CAPACITY_INSUFFICIENT"
             provider_state["required_instruments"] = len(SUPPORTED_SYMBOLS)
             provider_state["instruments_per_stream"] = instruments_per_stream
@@ -143,23 +146,46 @@ async def _start_live_streams():
     except Exception as exc:
         provider_state["status"] = "PROVIDER_ERROR"
         provider_state["details"] = {"error": str(exc)}
+        print(f"[PROVIDER_ERROR] {exc}", flush=True)
 
 
 @asynccontextmanager
 async def lifespan(app):
-    if provider.configured():
-        await _load_history()
-        await _start_live_streams()
-    else:
+    if not provider.configured():
         provider_state["status"] = "SETUP_REQUIRED"
+        yield
+        return
+
+    # Check account/book/plan access BEFORE spending any candle requests.
+    diag = await provider.diagnostics()
+    provider_state["details"] = diag
+
+    if diag.get("status") == "OK" and diag.get("venue_open"):
+        await _load_history()
+    elif diag.get("status") == "OK" and not diag.get("venue_open"):
+        provider_state["status"] = "VENUE_NOT_OPEN"
+        print(
+            "[STARTUP] Venue is not open for this key/plan; skipping history.",
+            flush=True,
+        )
+    else:
+        provider_state["status"] = diag.get("status", "PROVIDER_ERROR")
+        print(
+            "[STARTUP] Provider access check failed; skipping history and live.",
+            flush=True,
+        )
+
+    await _start_live_streams(diag)
+
     yield
+
     for task in live_tasks:
         task.cancel()
     if live_tasks:
         await asyncio.gather(*live_tasks, return_exceptions=True)
 
 
-app = FastAPI(title="LFS X AI Signal XYZ", version="1.3.0", lifespan=lifespan)
+app = FastAPI(title="LFS X AI Signal XYZ", version="1.4.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -228,19 +254,36 @@ def signal(symbol: str):
         raise HTTPException(status_code=404, detail="Unsupported market")
 
     if not provider.configured():
-        return {"symbol": symbol, "status": "SETUP_REQUIRED",
-                "reason": "Configure MARKET_DATA_API_KEY on the backend server"}
+        return {
+            "symbol": symbol,
+            "status": "SETUP_REQUIRED",
+            "reason": "Configure MARKET_DATA_API_KEY on the backend server",
+        }
 
     data = latest.get(symbol)
     if data:
-        # Make the limitation explicit without hiding a valid historical result.
         if provider_state["status"] == "LIVE_STREAMING_UNAVAILABLE":
-            data = {**data, "live_available": False,
-                    "note": "Historical 5m analysis is available; live streaming is disabled on the current data plan."}
+            data = {
+                **data,
+                "live_available": False,
+                "note": (
+                    "Historical 5m analysis is available; live streaming "
+                    "is disabled on the current data plan."
+                ),
+            }
+        elif provider_state["status"] == "BOOK_ACCESS_MISMATCH":
+            data = {
+                **data,
+                "live_available": False,
+                "note": provider_state["details"].get("message"),
+            }
         return data
 
-    return {"symbol": symbol, "status": "WAITING",
-            "reason": "Waiting for historical candles or live data"}
+    return {
+        "symbol": symbol,
+        "status": provider_state["status"],
+        "reason": "Waiting for provider access and historical/live data",
+    }
 
 
 @app.post("/api/analyze")
