@@ -76,21 +76,23 @@ def _record_closed(symbol, closed):
     }
 
 
-async def _live_loop(symbol):
+async def _live_loop():
+    symbols = sorted(SUPPORTED_SYMBOLS)
     while True:
         try:
-            async for tick in provider.stream(symbol):
+            async for tick in provider.stream(symbols):
                 closed = builder.add_tick(tick)
                 if closed is not None:
-                    _record_closed(symbol, closed)
+                    _record_closed(tick.symbol, closed)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            latest[symbol] = {
-                "status": "LIVE_RECONNECTING",
-                "symbol": symbol,
-                "error": str(exc),
-            }
+            for symbol in symbols:
+                latest[symbol] = {
+                    "status": "LIVE_RECONNECTING",
+                    "symbol": symbol,
+                    "error": str(exc),
+                }
             await asyncio.sleep(5)
 
 
@@ -111,21 +113,28 @@ async def _start_live_streams():
 
         stream_info = diag.get("streams") or {}
         stream_limit = stream_info.get("limit")
-        if provider.venue != "otc" and isinstance(stream_limit, int):
-            if stream_limit < len(SUPPORTED_SYMBOLS):
-                provider_state["status"] = "STREAM_CAPACITY_INSUFFICIENT"
-                provider_state["required_streams"] = len(SUPPORTED_SYMBOLS)
-                return
+        instruments_per_stream = stream_info.get("instrumentsPerStream")
+
+        if isinstance(stream_limit, int) and stream_limit < 1:
+            provider_state["status"] = "LIVE_STREAMING_UNAVAILABLE"
+            return
+
+        if (
+            isinstance(instruments_per_stream, int)
+            and instruments_per_stream < len(SUPPORTED_SYMBOLS)
+        ):
+            provider_state["status"] = "STREAM_INSTRUMENT_CAPACITY_INSUFFICIENT"
+            provider_state["required_instruments"] = len(SUPPORTED_SYMBOLS)
+            provider_state["instruments_per_stream"] = instruments_per_stream
+            return
 
         provider_state["status"] = "LIVE_STARTING"
-        live_tasks = [
-            asyncio.create_task(_live_loop(symbol))
-            for symbol in sorted(SUPPORTED_SYMBOLS)
-        ]
+        live_tasks = [asyncio.create_task(_live_loop())]
         provider_state["status"] = "LIVE_RUNNING"
     except Exception as exc:
         provider_state["status"] = "PROVIDER_ERROR"
         provider_state["details"] = {"error": str(exc)}
+
 
 
 @asynccontextmanager
@@ -235,12 +244,16 @@ def signal(symbol: str):
             "reason": "Configure MARKET_DATA_API_KEY on the backend server",
         }
 
-    if provider_state["status"] == "STREAM_CAPACITY_INSUFFICIENT":
+    if provider_state["status"] in {
+        "LIVE_STREAMING_UNAVAILABLE",
+        "STREAM_INSTRUMENT_CAPACITY_INSUFFICIENT",
+    }:
         return {
             "symbol": symbol,
-            "status": "STREAM_CAPACITY_INSUFFICIENT",
-            "reason": "The selected data plan cannot keep all three requested Quotex OTC streams live.",
-            "required_streams": len(SUPPORTED_SYMBOLS),
+            "status": provider_state["status"],
+            "reason": "The selected data plan cannot carry all three requested Quotex OTC instruments on a live stream.",
+            "required_instruments": len(SUPPORTED_SYMBOLS),
+            "instruments_per_stream": (provider_state.get("details") or {}).get("streams", {}).get("instrumentsPerStream"),
         }
 
     return latest.get(
