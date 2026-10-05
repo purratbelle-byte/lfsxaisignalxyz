@@ -31,7 +31,7 @@ async def _load_history():
     for symbol in SUPPORTED_SYMBOLS:
         try:
             rows = await provider.history(symbol, limit=300)
-            completed[symbol] = _history_to_candles(symbol, rows)[-5000:]
+            now = datetime.now(timezone.utc)\n            completed[symbol] = [c for c in _history_to_candles(symbol, rows) if c.close_time <= now][-5000:]
         except Exception as exc:
             latest[symbol] = {"status": "DATA_ERROR", "symbol": symbol, "error": str(exc)}
 
