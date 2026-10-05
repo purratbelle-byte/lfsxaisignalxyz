@@ -158,6 +158,22 @@ async def lifespan(app):
 
     # Check account/book/plan access BEFORE spending any candle requests.
     diag = await provider.diagnostics()
+
+    # Use the live OTC catalogue so the app never depends on a stale pair ID.
+    global SUPPORTED_SYMBOLS, completed, latest
+    if diag.get("status") == "OK" and diag.get("venue_open"):
+        try:
+            live_markets = await provider.currency_otc_markets(limit=3)
+            if live_markets:
+                SUPPORTED_SYMBOLS = set(live_markets)
+                completed = {symbol: [] for symbol in SUPPORTED_SYMBOLS}
+                latest = {}
+                print(
+                    f"[MARKETS] Using live OTC currency pairs: {sorted(SUPPORTED_SYMBOLS)}",
+                    flush=True,
+                )
+        except Exception as exc:
+            print(f"[MARKETS] Catalogue selection failed; using defaults: {exc}", flush=True)
     provider_state["details"] = diag
 
     if diag.get("status") == "OK" and diag.get("venue_open"):
