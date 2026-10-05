@@ -18,10 +18,7 @@ provider = LiveDataProvider()
 builder = CandleBuilder()
 completed = {symbol: [] for symbol in SUPPORTED_SYMBOLS}
 latest = {}
-provider_state = {
-    "status": "STARTING",
-    "details": {},
-}
+provider_state = {"status": "STARTING", "details": {}}
 live_tasks = []
 
 
@@ -29,17 +26,15 @@ def _history_to_candles(symbol, rows):
     candles = []
     for row in rows:
         ts = datetime.fromtimestamp(float(row["time"]), tz=timezone.utc)
-        candles.append(
-            Candle(
-                symbol=symbol,
-                open_time=ts,
-                close_time=ts + timedelta(seconds=300),
-                open=float(row["open"]),
-                high=float(row["high"]),
-                low=float(row["low"]),
-                close=float(row["close"]),
-            )
-        )
+        candles.append(Candle(
+            symbol=symbol,
+            open_time=ts,
+            close_time=ts + timedelta(seconds=300),
+            open=float(row["open"]),
+            high=float(row["high"]),
+            low=float(row["low"]),
+            close=float(row["close"]),
+        ))
     return sorted(candles, key=lambda x: x.open_time)
 
 
@@ -48,15 +43,27 @@ async def _load_history():
         try:
             rows = await provider.history(symbol, limit=5000)
             now = datetime.now(timezone.utc)
-            completed[symbol] = [
-                c
-                for c in _history_to_candles(symbol, rows)
+            candles = [
+                c for c in _history_to_candles(symbol, rows)
                 if c.close_time <= now
             ][-5000:]
+            completed[symbol] = candles
+
+            # Free-plan mode still gets a useful historical analysis even
+            # when OTCharts does not allow a live stream.
+            result = analyze_last_three(candles)
+            latest[symbol] = {
+                "symbol": symbol,
+                "timeframe": "5m",
+                "mode": "HISTORICAL",
+                "updated_at": now.isoformat(),
+                **result,
+            }
         except Exception as exc:
             latest[symbol] = {
                 "status": "DATA_ERROR",
                 "symbol": symbol,
+                "mode": "HISTORICAL",
                 "error": str(exc),
             }
 
@@ -71,6 +78,7 @@ def _record_closed(symbol, closed):
     latest[symbol] = {
         "symbol": symbol,
         "timeframe": "5m",
+        "mode": "LIVE",
         "updated_at": datetime.now(timezone.utc).isoformat(),
         **result,
     }
@@ -91,6 +99,7 @@ async def _live_loop():
                 latest[symbol] = {
                     "status": "LIVE_RECONNECTING",
                     "symbol": symbol,
+                    "mode": "LIVE",
                     "error": str(exc),
                 }
             await asyncio.sleep(5)
@@ -98,7 +107,6 @@ async def _live_loop():
 
 async def _start_live_streams():
     global live_tasks
-
     try:
         diag = await provider.diagnostics()
         provider_state["details"] = diag
@@ -119,10 +127,7 @@ async def _start_live_streams():
             provider_state["status"] = "LIVE_STREAMING_UNAVAILABLE"
             return
 
-        if (
-            isinstance(instruments_per_stream, int)
-            and instruments_per_stream < len(SUPPORTED_SYMBOLS)
-        ):
+        if isinstance(instruments_per_stream, int) and instruments_per_stream < len(SUPPORTED_SYMBOLS):
             provider_state["status"] = "STREAM_INSTRUMENT_CAPACITY_INSUFFICIENT"
             provider_state["required_instruments"] = len(SUPPORTED_SYMBOLS)
             provider_state["instruments_per_stream"] = instruments_per_stream
@@ -136,7 +141,6 @@ async def _start_live_streams():
         provider_state["details"] = {"error": str(exc)}
 
 
-
 @asynccontextmanager
 async def lifespan(app):
     if provider.configured():
@@ -144,20 +148,14 @@ async def lifespan(app):
         await _start_live_streams()
     else:
         provider_state["status"] = "SETUP_REQUIRED"
-
     yield
-
     for task in live_tasks:
         task.cancel()
     if live_tasks:
         await asyncio.gather(*live_tasks, return_exceptions=True)
 
 
-app = FastAPI(
-    title="LFS X AI Signal XYZ",
-    version="1.2.0",
-    lifespan=lifespan,
-)
+app = FastAPI(title="LFS X AI Signal XYZ", version="1.3.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -195,22 +193,12 @@ def root():
 
 @app.get("/api/info")
 def info():
-    return {
-        "name": "LFS X AI Signal XYZ",
-        "status": "online",
-        "timeframe": "5m",
-        "markets": sorted(SUPPORTED_SYMBOLS),
-        "live_provider_configured": provider.configured(),
-        "provider_status": provider_state["status"],
-    }
+    return root()
 
 
 @app.get("/api/provider-status")
 def provider_status():
-    return {
-        "status": provider_state["status"],
-        "details": provider_state["details"],
-    }
+    return {"status": provider_state["status"], "details": provider_state["details"]}
 
 
 @app.get("/health")
@@ -221,15 +209,13 @@ def health():
         "provider_status": provider_state["status"],
         "venue": provider.venue,
         "timeframe_seconds": 300,
+        "historical_candles": {s: len(completed[s]) for s in SUPPORTED_SYMBOLS},
     }
 
 
 @app.get("/api/markets")
 def markets():
-    return {
-        "timeframe_seconds": 300,
-        "markets": sorted(SUPPORTED_SYMBOLS),
-    }
+    return {"timeframe_seconds": 300, "markets": sorted(SUPPORTED_SYMBOLS)}
 
 
 @app.get("/api/signal/{symbol}")
@@ -238,32 +224,19 @@ def signal(symbol: str):
         raise HTTPException(status_code=404, detail="Unsupported market")
 
     if not provider.configured():
-        return {
-            "symbol": symbol,
-            "status": "SETUP_REQUIRED",
-            "reason": "Configure MARKET_DATA_API_KEY on the backend server",
-        }
+        return {"symbol": symbol, "status": "SETUP_REQUIRED",
+                "reason": "Configure MARKET_DATA_API_KEY on the backend server"}
 
-    if provider_state["status"] in {
-        "LIVE_STREAMING_UNAVAILABLE",
-        "STREAM_INSTRUMENT_CAPACITY_INSUFFICIENT",
-    }:
-        return {
-            "symbol": symbol,
-            "status": provider_state["status"],
-            "reason": "The selected data plan cannot carry all three requested Quotex OTC instruments on a live stream.",
-            "required_instruments": len(SUPPORTED_SYMBOLS),
-            "instruments_per_stream": (provider_state.get("details") or {}).get("streams", {}).get("instrumentsPerStream"),
-        }
+    data = latest.get(symbol)
+    if data:
+        # Make the limitation explicit without hiding a valid historical result.
+        if provider_state["status"] == "LIVE_STREAMING_UNAVAILABLE":
+            data = {**data, "live_available": False,
+                    "note": "Historical 5m analysis is available; live streaming is disabled on the current data plan."}
+        return data
 
-    return latest.get(
-        symbol,
-        {
-            "symbol": symbol,
-            "status": "WAITING",
-            "reason": "Collecting live candles",
-        },
-    )
+    return {"symbol": symbol, "status": "WAITING",
+            "reason": "Waiting for historical candles or live data"}
 
 
 @app.post("/api/analyze")
